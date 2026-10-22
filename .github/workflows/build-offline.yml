@@ -18,8 +18,9 @@ permissions:
 
 env:
   IMAGE: d3ft-train:latest
-  # 与 d3-kit/bootstrap.sh、install_offline.sh 依赖清单保持一致
-  DEPS: '"torch>=2.8" transformers==5.17.0 accelerate safetensors "huggingface_hub>=1.0" flash-linear-attention==0.5.2 einops pillow torchvision opencv-python-headless bitsandbytes peft sentencepiece'
+  # 与 d3-kit/bootstrap.sh、install_offline.sh 依赖清单保持一致（注意：值内不能带引号，
+  # 否则 shell 展开后引号会原样传给 pip；>= 经变量展开传参不会被 shell 当作重定向）
+  DEPS: torch>=2.8 transformers==5.17.0 accelerate safetensors huggingface_hub>=1.0 flash-linear-attention==0.5.2 einops pillow torchvision opencv-python-headless bitsandbytes peft sentencepiece
 
 jobs:
   build:
