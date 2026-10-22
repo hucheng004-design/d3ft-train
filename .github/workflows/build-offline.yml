@@ -1,0 +1,144 @@
+name: build-offline
+
+# 云端打包 d3-flash 训练环境（产物挂到 Release，浏览器即可下载）
+# 产物: 训练镜像 d3ft-train（gzip 压缩 + 2G 分卷，不含底座模型）+ llama.cpp 兜底 + 校验清单
+# 底座模型不打进镜像：手动下载后放服务器 ~/d3-work/models/d3-flash，运行时 -v 挂载
+# 用法: Actions → build-offline → Run workflow
+
+on:
+  workflow_dispatch:
+    inputs:
+      include_wheels:
+        description: '同时打包 python wheels（路线A 裸机离线安装用；路线B 可不开）'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  IMAGE: d3ft-train:latest
+  # 与 d3-kit/bootstrap.sh、install_offline.sh 依赖清单保持一致
+  DEPS: '"torch>=2.8" transformers==5.17.0 accelerate safetensors "huggingface_hub>=1.0" flash-linear-attention==0.5.2 einops pillow torchvision opencv-python-headless bitsandbytes peft sentencepiece'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 释放磁盘空间（wheels+镜像约 20G）
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          docker image prune -af || true
+          df -h /
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 下载 Miniconda py311 安装器
+        run: |
+          mkdir -p dist/conda dist/pip-wheels dist/llama
+          for v in 24.11.1-0 24.9.2-0 24.7.1-0 24.5.0-0 24.3.0-0 24.1.2-0; do
+            curl -fL --retry 2 -o dist/conda/Miniconda3-py311-Linux-x86_64.sh \
+              "https://mirrors.tuna.tsinghua.edu.cn/anaconda/miniconda/Miniconda3-py311_${v}-Linux-x86_64.sh" \
+              && break || rm -f dist/conda/Miniconda3-py311-Linux-x86_64.sh
+          done
+          test -s dist/conda/Miniconda3-py311-Linux-x86_64.sh
+          ls -lh dist/conda/
+
+      - name: pip download 全部依赖 wheels
+        run: |
+          pip download -d dist/pip-wheels --no-cache-dir \
+            -i https://pypi.tuna.tsinghua.edu.cn/simple $DEPS
+          du -sh dist/pip-wheels
+
+      - name: llama.cpp 兜底（官方发行版 + 源码包）
+        run: |
+          curl -fL --retry 2 -o dist/llama/llama-b11588-bin-ubuntu-x64.zip \
+            "https://github.com/ggml-org/llama.cpp/releases/download/b11588/llama-b11588-bin-ubuntu-x64.zip" \
+            || curl -fL --retry 2 -o dist/llama/llama-b11588-bin-ubuntu-x64.zip \
+            "https://ghproxy.net/https://github.com/ggml-org/llama.cpp/releases/download/b11588/llama-b11588-bin-ubuntu-x64.zip"
+          curl -fL --retry 2 -o dist/llama/llama.cpp-b11588.tar.gz \
+            "https://github.com/ggml-org/llama.cpp/archive/refs/tags/b11588.tar.gz" \
+            || curl -fL --retry 2 -o dist/llama/llama.cpp-b11588.tar.gz \
+            "https://ghproxy.net/https://github.com/ggml-org/llama.cpp/archive/refs/tags/b11588.tar.gz"
+          ls -lh dist/llama/
+
+      - name: 构建训练镜像（不含模型，wheels 用 bind mount 不进镜像层）
+        run: |
+          cat > dist/Dockerfile <<EOF
+          # syntax=docker/dockerfile:1
+          FROM python:3.11-bookworm
+          RUN --mount=type=bind,source=pip-wheels,target=/tmp/wheels \
+              pip install --no-index --find-links=/tmp/wheels $DEPS
+          EOF
+          cat dist/Dockerfile
+          DOCKER_BUILDKIT=1 docker build -t "$IMAGE" dist
+          docker save "$IMAGE" | gzip > dist/d3ft-train-image.tar.gz
+          du -sh dist/d3ft-train-image.tar.gz
+
+      - name: 打包 wheels（可选）
+        if: ${{ inputs.include_wheels }}
+        run: tar czf dist/python-wheels.tar.gz -C dist pip-wheels
+
+      - name: 整体 sha256 + 大文件切卷（GitHub Release 单文件上限 2G）
+        run: |
+          cd dist
+          split_and_hash() {
+            S=$(sha256sum "$1" | awk '{print $1}')
+            echo "$S  $1" > "$1.sha256"
+            SIZE=$(stat -c%s "$1")
+            if (( SIZE > 1900000000 )); then
+              split -b 1900m -d "$1" "$1.part-"
+              rm "$1"
+            fi
+          }
+          split_and_hash d3ft-train-image.tar.gz
+          [[ -f python-wheels.tar.gz ]] && split_and_hash python-wheels.tar.gz || true
+          find . -type f ! -name MANIFEST.sha256 -exec sha256sum {} \; > MANIFEST.sha256
+          ls -lh
+
+      - name: 上传到 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd dist
+          TAG="offline-$(date +%Y%m%d-%H%M)"
+          cat > release-notes.md <<'EOF'
+          ## d3-flash 训练环境离线包（不含底座模型）
+
+          ### 1. 还原镜像（任意 Linux，或直接在有 Docker 的下载机上做）
+          ```bash
+          cat d3ft-train-image.tar.gz.part-* > d3ft-train-image.tar.gz
+          sha256sum -c d3ft-train-image.tar.gz.sha256
+          docker load -i d3ft-train-image.tar.gz
+          ```
+
+          ### 2. 底座模型手动下载（不在此包内）
+          ```bash
+          pip install -U modelscope -i https://pypi.tuna.tsinghua.edu.cn/simple
+          modelscope download --model vllm-sr/d3-flash --local_dir d3-flash
+          ```
+          上传到服务器 `~/d3-work/models/d3-flash/`，容器运行时 `-v ~/d3-work:/root/d3-work` 挂载。
+
+          ### 3. 服务器运行（详见 d3ft-train/Docker训练手册.md）
+          ```bash
+          # llama 兜底 zip 放到 ~/d3-kit/offline/llama/
+          docker run --gpus all --rm -it --shm-size 8g \
+            -v ~/d3-work:/root/d3-work -v ~/d3-kit:/root/d3-kit \
+            -e D3_WORK=/root/d3-work -e D3_PY=python3 d3ft-train:latest bash
+          # 容器内: bash /root/d3-kit/install_offline.sh /root/d3-kit/offline
+          ```
+          EOF
+          ASSETS=(conda/Miniconda3-py311-Linux-x86_64.sh llama/* *.sha256 MANIFEST.sha256 d3ft-train-image.tar.gz.part-*)
+          if compgen -G "python-wheels.tar.gz.part-*" >/dev/null; then
+            ASSETS+=(python-wheels.tar.gz.part-*)
+          fi
+          gh release create "$TAG" "${ASSETS[@]}" \
+            --title "离线包 $TAG" --notes-file release-notes.md
+          echo "release_url=$(gh release view "$TAG" --json url -q .url)" >> "$GITHUB_OUTPUT" || true
+          gh release view "$TAG" --json url -q .url
