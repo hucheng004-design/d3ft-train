@@ -148,7 +148,8 @@ jobs:
           # （llama.cpp 已内置于镜像，与生产同版本，无需另外下载）
           ```
           EOF
-          ASSETS=(conda/Miniconda3-py311-Linux-x86_64.sh *.sha256 MANIFEST.sha256 d3ft-train-image.tar.gz.part-*)
+          # 注意：*.sha256 已包含 MANIFEST.sha256，勿重复添加（重复会 422 name already exists）
+          ASSETS=(conda/Miniconda3-py311-Linux-x86_64.sh *.sha256 d3ft-train-image.tar.gz.part-*)
           if compgen -G "python-wheels.tar.gz.part-*" >/dev/null; then
             ASSETS+=(python-wheels.tar.gz.part-*)
           fi
