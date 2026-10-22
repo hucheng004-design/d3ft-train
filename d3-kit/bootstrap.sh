@@ -36,8 +36,8 @@ if ! conda env list | grep -q "^$D3_CONDA_ENV "; then
 fi
 PIP="$HOME/miniconda3/envs/$D3_CONDA_ENV/bin/pip"
 "$PIP" install -q -i https://pypi.tuna.tsinghua.edu.cn/simple \
-  "torch>=2.8" "transformers==5.17.0" accelerate safetensors "huggingface_hub>=1.0" \
-  "flash-linear-attention==0.5.2" einops pillow torchvision opencv-python-headless \
+  "torch==2.8.0" "transformers==5.17.0" accelerate safetensors "huggingface_hub>=1.0" \
+  "flash-linear-attention==0.5.2" einops pillow "torchvision==0.23.0" opencv-python-headless \
   bitsandbytes peft sentencepiece
 "$PIP" install -q -i https://pypi.tuna.tsinghua.edu.cn/simple --no-deps "transformers==5.17.0"
 echo "  依赖安装完成: $("$HOME/miniconda3/envs/$D3_CONDA_ENV/bin/python" -c "import torch,transformers,peft,bitsandbytes;print('torch',torch.__version__,'| tf',transformers.__version__)")"

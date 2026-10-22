@@ -13,8 +13,8 @@ for a in "$@"; do
 done
 [[ "$(uname -s)" == "Linux" && "$(uname -m)" == "x86_64" ]] || { echo "FAIL: 请在 Linux x86_64 准备机上运行"; exit 1; }
 TUNA="https://pypi.tuna.tsinghua.edu.cn/simple"
-DEPS=("\"torch>=2.8\"" "transformers==5.17.0" accelerate safetensors "huggingface_hub>=1.0"
-      "flash-linear-attention==0.5.2" einops pillow torchvision opencv-python-headless
+DEPS=("\"torch==2.8.0\"" "torchvision==0.23.0" "transformers==5.17.0" accelerate safetensors "huggingface_hub>=1.0"
+      "flash-linear-attention==0.5.2" einops pillow opencv-python-headless
       bitsandbytes peft sentencepiece)
 
 echo "== ① 准备 python3.11（pip download 的 wheel 版本必须与服务器一致）=="

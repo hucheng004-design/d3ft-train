@@ -41,8 +41,8 @@ else
   PY="$PREFIX/bin/python"
   echo "  离线安装依赖（--no-index，只用本地 wheels）..."
   "$PY" -m pip install -q --no-index --find-links="$OFF/pip-wheels" \
-    "torch>=2.8" "transformers==5.17.0" accelerate safetensors "huggingface_hub>=1.0" \
-    "flash-linear-attention==0.5.2" einops pillow torchvision opencv-python-headless \
+    "torch==2.8.0" "torchvision==0.23.0" "transformers==5.17.0" accelerate safetensors "huggingface_hub>=1.0" \
+    "flash-linear-attention==0.5.2" einops pillow opencv-python-headless \
     bitsandbytes peft sentencepiece
   grep -q "d3-offline-py" env.sh || cat >> env.sh <<EOF
 

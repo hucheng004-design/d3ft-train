@@ -18,9 +18,9 @@ permissions:
 
 env:
   IMAGE: d3ft-train:latest
-  # 与 d3-kit/bootstrap.sh、install_offline.sh 依赖清单保持一致（注意：值内不能带引号，
-  # 否则 shell 展开后引号会原样传给 pip；>= 经变量展开传参不会被 shell 当作重定向）
-  DEPS: torch>=2.8 transformers==5.17.0 accelerate safetensors huggingface_hub>=1.0 flash-linear-attention==0.5.2 einops pillow torchvision opencv-python-headless bitsandbytes peft sentencepiece
+  # 与 d3-kit/bootstrap.sh、install_offline.sh 依赖清单保持一致
+  # torch 锁 2.8.0：>=2.8 会解析到最新版（CUDA13 运行库，服务器驱动 535/CUDA12.2 不兼容）
+  DEPS: torch==2.8.0 torchvision==0.23.0 transformers==5.17.0 accelerate safetensors huggingface_hub>=1.0 flash-linear-attention==0.5.2 einops pillow opencv-python-headless bitsandbytes peft sentencepiece
 
 jobs:
   build:
@@ -40,21 +40,20 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: 下载 Miniconda py311 安装器
+      - name: 下载 Miniconda py311 安装器（官方源）
         run: |
           mkdir -p dist/conda dist/pip-wheels dist/llama
           for v in 24.11.1-0 24.9.2-0 24.7.1-0 24.5.0-0 24.3.0-0 24.1.2-0; do
             curl -fL --retry 2 -o dist/conda/Miniconda3-py311-Linux-x86_64.sh \
-              "https://mirrors.tuna.tsinghua.edu.cn/anaconda/miniconda/Miniconda3-py311_${v}-Linux-x86_64.sh" \
+              "https://repo.anaconda.com/miniconda/Miniconda3-py311_${v}-Linux-x86_64.sh" \
               && break || rm -f dist/conda/Miniconda3-py311-Linux-x86_64.sh
           done
           test -s dist/conda/Miniconda3-py311-Linux-x86_64.sh
           ls -lh dist/conda/
 
-      - name: pip download 全部依赖 wheels
+      - name: pip download 全部依赖 wheels（官方 PyPI，GitHub runner 上最快，勿用国内镜像）
         run: |
-          pip download -d dist/pip-wheels --no-cache-dir \
-            -i https://pypi.tuna.tsinghua.edu.cn/simple $DEPS
+          pip download -d dist/pip-wheels --no-cache-dir --retries 5 --timeout 60 $DEPS
           du -sh dist/pip-wheels
 
       - name: llama.cpp 兜底（官方发行版 + 源码包）
