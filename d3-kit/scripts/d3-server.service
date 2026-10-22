@@ -1,0 +1,15 @@
+[Unit]
+Description=d3-flash decision model (llama.cpp)
+After=network.target
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@WORK@
+Environment=LD_LIBRARY_PATH=@LLAMA@
+ExecStart=@LLAMA@/llama-server -m @GGUF@ -ngl 99 -c 32768 -ub 2048 -fa on --jinja --port @PORT@ --host 0.0.0.0 --api-key @KEY@
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,8 @@
+# llama.cpp CUDA 运行时包 145M，超过 GitHub 单文件 100M 限制，不入库
+# 容器路线B用不到（镜像内 llama 用 Release 下载的 ubuntu zip）；裸机路线A需要时手动拷贝
+d3-kit/runtime/*.tar.gz
+
+# 本地离线打包产物
+d3-offline/
+*.tar.gz
+*.part-*

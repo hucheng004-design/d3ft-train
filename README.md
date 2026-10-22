@@ -7,7 +7,8 @@
 
 ## 使用
 
-1. 把 `d3-kit/` 目录放入本仓库一起推送（工作流自包含，不强制依赖仓库内容）
+1. 本仓库已包含全部内容（工作流 + `d3-kit/` + 手册），直接推送到 GitHub 即可
+   （`.gitignore` 已排除超过 100M 限制的 `d3-kit/runtime/*.tar.gz`）
 2. GitHub → **Actions** → **build-offline** → **Run workflow**
    （可选勾选"同时打包 python wheels"，路线A 裸机离线安装才需要）
 3. 运行完成后到 **Releases** 下载全部资产：

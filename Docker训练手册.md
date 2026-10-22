@@ -31,13 +31,14 @@
 ## 1. 云端打包（GitHub Actions，一次性）
 
 1. GitHub 建仓库 `d3ft-train`（Private 也可以，Actions 对私有仓库每月有免费额度，够用）
-2. 把本目录（含 `.github/workflows/build-offline.yml`）和 `d3-kit/` 一起推送：
+2. 把本目录整体推送（`d3-kit/` 已在仓库内；注意 `.gitignore` 已排除 145M 的
+   `d3-kit/runtime/*.tar.gz`——超过 GitHub 100M 单文件限制，且容器路线用不到）：
 
 ```bash
 cd 决策模型/d3ft-train
-git init && git add . ../d3-kit && git commit -m "init"
+git init && git add . && git commit -m "init"
 git remote add origin git@github.com:<你的用户名>/d3ft-train.git
-git push -u origin main        # 注意把 ../d3-kit 放进仓库（如 d3-kit/ 子目录）
+git push -u origin main
 ```
 
 3. GitHub 页面 → **Actions** → **build-offline** → **Run workflow**
