@@ -10,10 +10,11 @@
 1. 本仓库已包含全部内容（工作流 + `d3-kit/` + 手册），直接推送到 GitHub 即可
    （`.gitignore` 已排除超过 100M 限制的 `d3-kit/runtime/*.tar.gz`）
 2. GitHub → **Actions** → **build-offline** → **Run workflow**
-   （可选勾选"同时打包 python wheels"，路线A 裸机离线安装才需要）
+   - 镜像内置 llama.cpp b11588（官方 CUDA 12.8 预编译包，与生产同版本）
+   - `include_wheels` 不用勾（裸机路线A 离线安装才需要）
 3. 运行完成后到 **Releases** 下载全部资产：
    `d3ft-train-image.tar.gz.part-00/01/...`（镜像分卷）、`*.sha256`（校验）、
-   `Miniconda3-py311-*.sh`、`llama-*`（量化/验证兜底）
+   `Miniconda3-py311-*.sh`（裸机路线A才用）
 
 ## 服务器端还原镜像
 
@@ -34,16 +35,13 @@ modelscope download --model vllm-sr/d3-flash --local_dir d3-flash
 ## 服务器运行（CentOS 7 / 无外网 GPU 服务器，路线B）
 
 ```bash
-# 0) llama 兜底 zip 就位（Release 下载的 llama-b11588-bin-ubuntu-x64.zip 放到这里）
-mkdir -p ~/d3-kit/offline/llama
-
 # 1) 起容器
 docker run --gpus all --rm -it --shm-size 8g \
   -v ~/d3-work:/root/d3-work -v ~/d3-kit:/root/d3-kit \
   -e D3_WORK=/root/d3-work -e D3_PY=python3 d3ft-train:latest bash
 
-# 2) 容器内初始化（解压 llama.cpp / 转换工具链 / 训练补丁 / 终检；模型已挂载则自动跳过拷贝）
-bash /root/d3-kit/install_offline.sh /root/d3-kit/offline
+# 2) 容器内初始化（识别镜像内置 llama.cpp / 转换工具链 / 训练补丁 / 终检；模型已挂载则自动跳过拷贝）
+bash /root/d3-kit/install_offline.sh
 bash /root/d3-kit/check_env.sh        # 网络 FAIL 属离线预期，忽略
 ```
 

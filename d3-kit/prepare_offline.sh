@@ -11,6 +11,7 @@ OUT="d3-offline"; DOCKER=0
 for a in "$@"; do
   [[ "$a" == "--docker" ]] && DOCKER=1 || OUT="$a"
 done
+LLAMA_TAG="${LLAMA_TAG:-b11588}"    # 须与生产 llama-server/Dockerfile 的 LLAMA_VERSION 一致
 [[ "$(uname -s)" == "Linux" && "$(uname -m)" == "x86_64" ]] || { echo "FAIL: 请在 Linux x86_64 准备机上运行"; exit 1; }
 TUNA="https://pypi.tuna.tsinghua.edu.cn/simple"
 DEPS=("\"torch==2.8.0\"" "torchvision==0.23.0" "transformers==5.17.0" accelerate safetensors "huggingface_hub>=1.0"
@@ -49,29 +50,57 @@ echo "== ④ 底座模型 vllm-sr/d3-flash（约 17G，断点续传，中断重�
 "$PY11" -m pip install -q -U modelscope -i "$TUNA"
 "$(dirname "$PY11")/modelscope" download --model vllm-sr/d3-flash --local_dir "$OUT/model/d3-flash"
 
-echo "== ⑤ llama.cpp 兜底（官方 ubuntu 发行版 + 源码包）=="
-LLZIP="$OUT/llama/llama-b11588-bin-ubuntu-x64.zip"
-if [[ ! -s "$LLZIP" ]]; then
-  curl -fL --retry 2 -o "$LLZIP" \
-    "https://github.com/ggml-org/llama.cpp/releases/download/b11588/llama-b11588-bin-ubuntu-x64.zip" \
-    || curl -fL --retry 2 -o "$LLZIP" \
-    "https://ghproxy.net/https://github.com/ggml-org/llama.cpp/releases/download/b11588/llama-b11588-bin-ubuntu-x64.zip" \
-    || { rm -f "$LLZIP"; echo "  WARN: 发行版下载失败（不影响 Docker 路线）"; }
+if (( ! DOCKER )); then
+  echo "== ⑤ llama.cpp 兜底（裸机路线A用；docker 路线直接烤进镜像，跳过此步）=="
+  J=$(curl -fsSL --max-time 30 "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest" 2>/dev/null || true)
+  TAG="${LLAMA_TAG:-$(grep -m1 '"tag_name"' <<<"$J" | cut -d'"' -f4 || true)}"
+  if [[ -z "${TAG:-}" ]]; then
+    echo "  WARN: 取不到 llama.cpp 版本号（api.github.com 不可达），跳过 llama 兜底下载"
+  else
+    LLZIP="$OUT/llama/llama-ubuntu-x64.zip"
+    if [[ ! -s "$LLZIP" ]]; then
+      URL=$(grep -o '"browser_download_url": *"[^"]*bin-ubuntu-cuda-x64\.zip"' <<<"$J" | head -1 | cut -d'"' -f4 || true)
+      [[ -n "${URL:-}" ]] || URL=$(grep -o '"browser_download_url": *"[^"]*bin-ubuntu-x64\.zip"' <<<"$J" | head -1 | cut -d'"' -f4 || true)
+      if [[ -z "${URL:-}" ]]; then
+        URL="https://github.com/ggml-org/llama.cpp/releases/download/${TAG}/llama-${TAG}-bin-ubuntu-x64.zip"
+      fi
+      curl -fL --retry 2 -o "$LLZIP" "$URL" \
+        || curl -fL --retry 2 -o "$LLZIP" "https://ghproxy.net/$URL" \
+        || { rm -f "$LLZIP"; echo "  WARN: 发行版下载失败（不影响 Docker 路线）"; }
+    fi
+    SRC="$OUT/llama/llama.cpp-${TAG}-source.tar.gz"
+    [[ -s "$SRC" ]] || \
+      curl -fL --retry 2 -o "$SRC" "https://github.com/ggml-org/llama.cpp/archive/refs/tags/${TAG}.tar.gz" \
+      || curl -fL --retry 2 -o "$SRC" "https://ghproxy.net/https://github.com/ggml-org/llama.cpp/archive/refs/tags/${TAG}.tar.gz" \
+      || { rm -f "$SRC"; echo "  WARN: 源码包下载失败"; }
+  fi
 fi
-[[ -s "$OUT/llama/llama.cpp-b11588.tar.gz" ]] || \
-  curl -fL --retry 2 -o "$OUT/llama/llama.cpp-b11588.tar.gz" \
-    "https://github.com/ggml-org/llama.cpp/archive/refs/tags/b11588.tar.gz" \
-    || curl -fL --retry 2 -o "$OUT/llama/llama.cpp-b11588.tar.gz" \
-    "https://ghproxy.net/https://github.com/ggml-org/llama.cpp/archive/refs/tags/b11588.tar.gz" \
-    || { rm -f "$OUT/llama/llama.cpp-b11588.tar.gz"; echo "  WARN: 源码包下载失败"; }
 
 if (( DOCKER )); then
-  echo "== ⑥ 构建并导出训练镜像 d3ft-train:latest（python3.11 + 依赖全预装，不含底座模型）=="
-  cat > "$OUT/Dockerfile" <<EOF
+  echo "== ⑥ 构建并导出训练镜像（llama.cpp ${LLAMA_TAG} 预编译包内置 + 依赖全预装，不含底座模型）=="
+  LLAMA_ASSET="llama-${LLAMA_TAG}-bin-ubuntu-cuda-12.8-x64.tar.gz"
+  if [[ ! -s "$OUT/$LLAMA_ASSET" ]]; then
+    curl -fL --retry 2 -o "$OUT/$LLAMA_ASSET" \
+      "https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_TAG}/${LLAMA_ASSET}" \
+      || curl -fL --retry 2 -o "$OUT/$LLAMA_ASSET" \
+      "https://ghproxy.net/https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_TAG}/${LLAMA_ASSET}" \
+      || { echo "FAIL: llama 预编译包下载失败（检查版本号/网络）"; exit 1; }
+  fi
+  cat > "$OUT/Dockerfile" <<'EOF'
 # syntax=docker/dockerfile:1
 FROM python:3.11-bookworm
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libgomp1 libcurl4 ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN --mount=type=bind,source=pip-wheels,target=/tmp/wheels \
     pip install --no-index --find-links=/tmp/wheels ${DEPS[*]}
+EOF
+  cat >> "$OUT/Dockerfile" <<EOF
+ADD ${LLAMA_ASSET} /opt/llama-tmp
+RUN SRV=\$(find /opt/llama-tmp -type f -name llama-server | head -1) && \\
+    test -n "\$SRV" && \\
+    mkdir -p /opt/llama && cp -a "\$(dirname "\$SRV")"/. /opt/llama/ && rm -rf /opt/llama-tmp && \\
+    ln -sf /opt/llama/llama-server /usr/local/bin/llama-server && \\
+    ln -sf /opt/llama/llama-quantize /usr/local/bin/llama-quantize
 EOF
   DOCKER_BUILDKIT=1 docker build -t d3ft-train:latest "$OUT"
   docker save d3ft-train:latest | gzip > "$OUT/d3ft-train-image.tar.gz"

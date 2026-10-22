@@ -18,6 +18,9 @@ permissions:
 
 env:
   IMAGE: d3ft-train:latest
+  # llama.cpp 预编译包（x64 + CUDA 构建，版本与生产 llama-server/Dockerfile 的 LLAMA_VERSION 一致；
+  # 需 glibc≤2.36：Ubuntu 22.04 系构建，24.04 构建在 Debian 12 容器里跑不起来）
+  LLAMA_ASSET: llama-b11588-bin-ubuntu-cuda-12.8-x64.tar.gz
   # 与 d3-kit/bootstrap.sh、install_offline.sh 依赖清单保持一致
   # torch 锁 2.8.0：>=2.8 会解析到最新版（CUDA13 运行库，服务器驱动 535/CUDA12.2 不兼容）
   DEPS: torch==2.8.0 torchvision==0.23.0 transformers==5.17.0 accelerate safetensors huggingface_hub>=1.0 flash-linear-attention==0.5.2 einops pillow opencv-python-headless bitsandbytes peft sentencepiece
@@ -42,7 +45,7 @@ jobs:
 
       - name: 下载 Miniconda py311 安装器（官方源）
         run: |
-          mkdir -p dist/conda dist/pip-wheels dist/llama
+          mkdir -p dist/conda dist/pip-wheels
           for v in 24.11.1-0 24.9.2-0 24.7.1-0 24.5.0-0 24.3.0-0 24.1.2-0; do
             curl -fL --retry 2 -o dist/conda/Miniconda3-py311-Linux-x86_64.sh \
               "https://repo.anaconda.com/miniconda/Miniconda3-py311_${v}-Linux-x86_64.sh" \
@@ -56,29 +59,40 @@ jobs:
           pip download -d dist/pip-wheels --no-cache-dir --retries 5 --timeout 60 $DEPS
           du -sh dist/pip-wheels
 
-      - name: llama.cpp 兜底（官方发行版 + 源码包）
+      - name: 下载 llama.cpp 预编译包（${{ env.LLAMA_ASSET }}）
         run: |
-          curl -fL --retry 2 -o dist/llama/llama-b11588-bin-ubuntu-x64.zip \
-            "https://github.com/ggml-org/llama.cpp/releases/download/b11588/llama-b11588-bin-ubuntu-x64.zip" \
-            || curl -fL --retry 2 -o dist/llama/llama-b11588-bin-ubuntu-x64.zip \
-            "https://ghproxy.net/https://github.com/ggml-org/llama.cpp/releases/download/b11588/llama-b11588-bin-ubuntu-x64.zip"
-          curl -fL --retry 2 -o dist/llama/llama.cpp-b11588.tar.gz \
-            "https://github.com/ggml-org/llama.cpp/archive/refs/tags/b11588.tar.gz" \
-            || curl -fL --retry 2 -o dist/llama/llama.cpp-b11588.tar.gz \
-            "https://ghproxy.net/https://github.com/ggml-org/llama.cpp/archive/refs/tags/b11588.tar.gz"
-          ls -lh dist/llama/
+          curl -fL --retry 3 -o "dist/${LLAMA_ASSET}" \
+            "https://github.com/ggml-org/llama.cpp/releases/download/b11588/${LLAMA_ASSET}"
+          ls -lh dist/
 
-      - name: 构建训练镜像（不含模型，wheels 用 bind mount 不进镜像层）
+      - name: 构建训练镜像（llama.cpp 预编译包内置 + wheels bind mount + 不含模型）
         run: |
-          cat > dist/Dockerfile <<EOF
+          # 第一段：基础环境 + python 依赖（DEPS 与 env.DEPS 保持一致）
+          cat > dist/Dockerfile <<'EOF'
           # syntax=docker/dockerfile:1
           FROM python:3.11-bookworm
+          RUN apt-get update && apt-get install -y --no-install-recommends \
+                libgomp1 libcurl4 ca-certificates && rm -rf /var/lib/apt/lists/*
           RUN --mount=type=bind,source=pip-wheels,target=/tmp/wheels \
-              pip install --no-index --find-links=/tmp/wheels $DEPS
+              pip install --no-index --find-links=/tmp/wheels \
+              torch==2.8.0 torchvision==0.23.0 transformers==5.17.0 accelerate safetensors \
+              "huggingface_hub>=1.0" flash-linear-attention==0.5.2 einops pillow \
+              opencv-python-headless bitsandbytes peft sentencepiece
+          EOF
+          # 第二段：llama.cpp 预编译包解压到 /opt/llama，/usr/local/bin 留软链
+          cat >> dist/Dockerfile <<EOF
+          ADD $LLAMA_ASSET /opt/llama-tmp
+          RUN SRV=\$(find /opt/llama-tmp -type f -name llama-server | head -1) && \\
+              test -n "\$SRV" && \\
+              mkdir -p /opt/llama && cp -a "\$(dirname "\$SRV")"/. /opt/llama/ && rm -rf /opt/llama-tmp && \\
+              ln -sf /opt/llama/llama-server /usr/local/bin/llama-server && \\
+              ln -sf /opt/llama/llama-quantize /usr/local/bin/llama-quantize
           EOF
           cat dist/Dockerfile
           DOCKER_BUILDKIT=1 docker build -t "$IMAGE" dist
+          docker run --rm "$IMAGE" sh -c "ls -lh /opt/llama/llama-server /opt/llama/llama-quantize && python3 -c 'import torch; print(torch.__version__)'"   # 构建自检（runner 无 GPU，不跑 llama-server --version）
           docker save "$IMAGE" | gzip > dist/d3ft-train-image.tar.gz
+          rm -f "dist/${LLAMA_ASSET}"
           du -sh dist/d3ft-train-image.tar.gz
 
       - name: 打包 wheels（可选）
@@ -127,14 +141,14 @@ jobs:
 
           ### 3. 服务器运行（详见 d3ft-train/Docker训练手册.md）
           ```bash
-          # llama 兜底 zip 放到 ~/d3-kit/offline/llama/
           docker run --gpus all --rm -it --shm-size 8g \
             -v ~/d3-work:/root/d3-work -v ~/d3-kit:/root/d3-kit \
             -e D3_WORK=/root/d3-work -e D3_PY=python3 d3ft-train:latest bash
-          # 容器内: bash /root/d3-kit/install_offline.sh /root/d3-kit/offline
+          # 容器内: bash /root/d3-kit/install_offline.sh
+          # （llama.cpp 已内置于镜像，与生产同版本，无需另外下载）
           ```
           EOF
-          ASSETS=(conda/Miniconda3-py311-Linux-x86_64.sh llama/* *.sha256 MANIFEST.sha256 d3ft-train-image.tar.gz.part-*)
+          ASSETS=(conda/Miniconda3-py311-Linux-x86_64.sh *.sha256 MANIFEST.sha256 d3ft-train-image.tar.gz.part-*)
           if compgen -G "python-wheels.tar.gz.part-*" >/dev/null; then
             ASSETS+=(python-wheels.tar.gz.part-*)
           fi

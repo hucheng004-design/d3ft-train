@@ -1,24 +1,26 @@
 #!/usr/bin/env bash
-# install_offline.sh — 服务器离线安装（配合 prepare_offline.sh 产物，全程不联网）
-# 用法: bash install_offline.sh [offline目录]     # 默认 ./offline（即 d3-kit/offline）
-# 自动: 校验清单 → python3.11+离线依赖 → 底座模型 → llama.cpp → 转换工具链 → 训练补丁 → 终检
-# 路线A: 裸机安装（glibc≥2.28）
-# 路线B: CentOS7/glibc<2.28 → Docker 容器内也可跑本脚本（传 -e D3_PY=python3，见手册第 5 节）
+# install_offline.sh — 离线安装（配合 prepare_offline.sh 产物或云端打包镜像，全程不联网）
+# 用法: bash install_offline.sh [offline目录]   # 省略参数 = 云端打包模式（依赖/llama 已内置镜像）
+# 自动: 完整性校验(如有) → python3.11+离线依赖 → 底座模型 → llama.cpp → 转换工具链 → 训练补丁 → 终检
+# 路线A: 裸机安装（glibc≥2.28，需 offline 离线包）
+# 路线B: 容器内直接跑（依赖与 llama.cpp 已内置镜像，无需 offline 包）
 set -euo pipefail
 cd "$(dirname "$0")" && source ./env.sh
 
 say() { printf '\n=== %s ===\n' "$*"; }
 [[ "$(uname -m)" == "x86_64" ]] || { echo "FAIL: 仅支持 x86_64"; exit 1; }
 OFF="${1:-$D3_KIT/offline}"
-[[ -d "$OFF" ]] || { echo "FAIL: 找不到离线包目录 $OFF（prepare_offline.sh 产物，默认放 d3-kit/offline）"; exit 1; }
+if [[ ! -d "$OFF" ]]; then
+  echo "WARN: 未找到离线包目录 $OFF —— 云端打包模式（依赖/llama 已内置镜像）属预期，继续"
+fi
 
 say "⓪ 校验离线包完整性"
-if [[ -f "$OFF/MANIFEST.sha256" ]]; then
+if [[ -d "$OFF" && -f "$OFF/MANIFEST.sha256" ]]; then
   ( cd "$OFF" && sha256sum -c MANIFEST.sha256 --quiet ) \
     || { echo "  FAIL: 校验失败，文件损坏/缺失，请重新传输"; exit 1; }
   echo "  校验通过"
 else
-  echo "  WARN: 无 MANIFEST.sha256（云端打包模式），跳过整体校验"
+  echo "  跳过（无离线包或无清单：云端打包模式属预期）"
 fi
 
 say "① Python 3.11 + 离线依赖"
@@ -78,13 +80,33 @@ fi
 say "③ llama.cpp -> $D3_LLAMA_DIR"
 if [[ -x "$D3_LLAMA_DIR/llama-server" ]]; then
   echo "  已存在，跳过"
+elif [[ -x /opt/llama/llama-server && -x /opt/llama/llama-quantize ]]; then
+  D3LLAMA=/opt/llama
+elif [[ -x /usr/local/bin/llama-server && -x /usr/local/bin/llama-quantize ]]; then
+  D3LLAMA=/usr/local/bin
 else
-  Z=$(find "$OFF/llama" -name '*bin-ubuntu-x64.zip' | head -1)
-  [[ -n "$Z" ]] || { echo "  FAIL: offline/llama 里没有发行版 zip"; exit 1; }
+  D3LLAMA=""
+fi
+if [[ -n "${D3LLAMA:-}" ]]; then
+  # 云端/本地 docker 打包：llama.cpp 预编译包已内置镜像（与生产同版本）
+  grep -q "d3-llama-builtin" env.sh || cat >> env.sh <<EOF
+
+# >>> d3-llama-builtin（install_offline.sh 生成；llama.cpp 内置于训练镜像，与生产同版本）
+export D3_LLAMA_DIR=$D3LLAMA
+# <<<
+EOF
+  export D3_LLAMA_DIR="$D3LLAMA"
+  echo "  使用镜像内置 llama.cpp（$D3LLAMA），版本与生产一致"
+else
+  Z=$(find "$OFF/llama" -name '*.zip' -o -name '*.tar.gz' 2>/dev/null | head -1)
+  [[ -n "$Z" ]] || { echo "  FAIL: offline/llama 里没有 llama 发行版 zip/tar.gz"; exit 1; }
   TMP=$(mktemp -d)
-  "$PY" -m zipfile -e "$Z" "$TMP"
+  case "$Z" in
+    *.tar.gz) mkdir -p "$TMP/pkg" && tar xzf "$Z" -C "$TMP/pkg" ;;
+    *)        "$PY" -m zipfile -e "$Z" "$TMP" ;;
+  esac
   SRV=$(find "$TMP" -type f -name llama-server | head -1)
-  [[ -n "$SRV" ]] || { echo "  FAIL: zip 里没找到 llama-server"; exit 1; }
+  [[ -n "$SRV" ]] || { echo "  FAIL: 包里没找到 llama-server"; exit 1; }
   mkdir -p "$D3_LLAMA_DIR" && cp -a "$(dirname "$SRV")/." "$D3_LLAMA_DIR/"
   rm -rf "$TMP"
 fi

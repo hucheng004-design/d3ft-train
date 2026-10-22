@@ -42,16 +42,15 @@ git push -u origin main
 ```
 
 3. GitHub 页面 → **Actions** → **build-offline** → **Run workflow**
+   - 镜像内置 llama.cpp **b11588**（官方 CUDA 12.8 预编译包，与生产 `LLAMA_VERSION` 一致），无需配置
    - `include_wheels` 不用勾（那是裸机路线A才需要的）
 4. 等 15~30 分钟，到仓库 **Releases** 下载资产：
 
 | 资产 | 用途 | 是否必下 |
 |---|---|---|
-| `d3ft-train-image.tar.gz.part-00/01/...` | 训练镜像分卷 | **必下** |
+| `d3ft-train-image.tar.gz.part-00/01/...` | 训练镜像分卷（已含 llama.cpp b11588） | **必下** |
 | `d3ft-train-image.tar.gz.sha256` | 镜像整体校验 | **必下** |
-| `llama-b11588-bin-ubuntu-x64.zip` | llama.cpp（量化/验证用） | **必下** |
 | `MANIFEST.sha256` | 整包清单 | 可选 |
-| `llama.cpp-b11588.tar.gz` | 源码兜底 | 可不下 |
 | `Miniconda3-py311-*.sh` | 裸机路线A才用 | 可不下 |
 
 ---
@@ -71,10 +70,9 @@ docker load -i ~/d3ft-train-image.tar.gz
 docker images | grep d3ft-train                  # 确认出现 d3ft-train:latest
 rm ~/d3ft-train-image.tar.gz                     # 载入后可删，省 4.5G
 
-# ④ 宿主机目录初始化 + llama 兜底就位
-mkdir -p ~/d3-work/models ~/d3-work/data ~/d3-kit/offline/llama
-# 把 Release 下载的 llama zip 放进去（容器内安装脚本会解压它）：
-# ~/d3-kit/offline/llama/llama-b11588-bin-ubuntu-x64.zip
+# ④ 宿主机目录初始化
+mkdir -p ~/d3-work/models ~/d3-work/data
+# （llama.cpp 已按生产版本 b11588 编译进镜像，无需单独准备）
 ```
 
 ---
@@ -133,8 +131,8 @@ docker run --gpus all --rm -it --shm-size 8g \
 
 ```bash
 # ---- 容器内 ----
-bash /root/d3-kit/install_offline.sh /root/d3-kit/offline
-#   自动：依赖自检(镜像已装,跳过) → 解压 llama.cpp → 转换工具链 → 训练补丁 → 导入终检
+bash /root/d3-kit/install_offline.sh
+#   自动：依赖自检(镜像已装,跳过) → 识别镜像内置 llama.cpp(b11588) → 转换工具链 → 训练补丁 → 导入终检
 #   模型未下载时会打印 WARN 提示，下好放 ~/d3-work/models/d3-flash 后重跑一次即可
 
 bash /root/d3-kit/check_env.sh
@@ -234,6 +232,7 @@ python3 /root/d3-kit/scripts/evaluate.py --gguf ... --anti /root/d3-work/data/�
 
 | 现象 | 处理 |
 |---|---|
+| 想换 llama.cpp 版本/资产 | 改 workflow 的 `env.LLAMA_ASSET`（Releases 页文件名：x64 + Ubuntu 22.04 系构建 + CUDA 变体，版本须与生产一致）重新打包；本地打包用 `LLAMA_TAG=xxx bash prepare_offline.sh d3-offline --docker` |
 | `docker: Error response... --gpus all` | nvidia-container-toolkit 未装/未生效：安装后 `systemctl restart docker`；先用现有推理容器验证 GPU 可用性 |
 | 容器内 `torch.cuda.is_available()` False | 宿主机先 `nvidia-smi` 确认驱动；驱动 <525 需升级 |
 | check_env 网络 FAIL | 离线预期，忽略即可 |
